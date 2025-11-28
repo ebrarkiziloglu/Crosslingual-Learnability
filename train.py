@@ -3,6 +3,8 @@ import argparse
 import math
 import os
 from typing import Tuple
+import logging
+import sys
 
 import torch
 from torch.utils.data import DataLoader
@@ -11,6 +13,13 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 
 from dataloaders import create_dataloaders
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+logger = logging.getLogger(__name__)
 
 def mask_batch(
     batch: dict,
@@ -90,8 +99,16 @@ def train(
     device: torch.device,
     save_output: bool = True,
 ):
+    logger.info(f"[Init] Moving model to device: {device}")
     model.to(device)
     model.train()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(
+        f"[Init] Model parameters - total: {total_params:,}, "
+        f"trainable: {trainable_params:,}",
+    )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-08, weight_decay=0.1)
     scheduler = get_cosine_schedule_with_warmup(
@@ -103,7 +120,14 @@ def train(
     global_step = 0
     running_loss = 0.0
 
-    for epoch in range(math.ceil(total_steps / len(train_dataloader))):
+    num_epochs = math.ceil(total_steps / len(train_dataloader))
+    logger.info(
+        f"[Init] Starting training loop for {num_epochs} epochs "
+        f"and {total_steps} optimizer steps.",
+    )
+
+    for epoch in range(num_epochs):
+        logger.info(f"[Train] Epoch {epoch + 1}/{num_epochs} started.")
         for step, batch in enumerate(train_dataloader):
             masked_batch = move_batch_to_device(mask_batch(batch, tokenizer),
                                                 device)
@@ -125,22 +149,20 @@ def train(
 
                 if global_step % logging_steps == 0:
                     avg_loss = running_loss / logging_steps
-                    print(
+                    logger.info(
                         f"Step {global_step}/{total_steps} "
                         f"- loss: {avg_loss:.4f} "
                         f"- lr: {scheduler.get_last_lr()[0]:.2e}",
-                        flush=True,
                     )
                     running_loss = 0.0
 
                 if global_step % eval_steps == 0:
                     eval_metrics = evaluate(model, tokenizer, eval_dataloader,
                                             device)
-                    print(
+                    logger.info(
                         f"[Eval @ step {global_step}] "
                         f"loss: {eval_metrics['loss']:.4f} "
                         f"acc: {eval_metrics['acc']:.2f}",
-                        flush=True,
                     )
 
                 if global_step >= total_steps:
@@ -151,17 +173,16 @@ def train(
 
     # Final evaluation & save
     eval_metrics = evaluate(model, tokenizer, eval_dataloader, device)
-    print(
+    logger.info(
         f"[Final Eval] loss: {eval_metrics['loss']:.4f} "
         f"acc: {eval_metrics['acc']:.2f}",
-        flush=True,
     )
 
     if save_output:
         os.makedirs(output_path, exist_ok=True)
         model.save_pretrained(output_path)
         tokenizer.save_pretrained(output_path)
-        print(f"Saved model and tokenizer to {output_path}", flush=True)
+        logger.info(f"Saved model and tokenizer to {output_path}")
 
 
 
@@ -217,7 +238,10 @@ def build_model_and_tokenizer(
 
     # model = BertForMaskedLM(config)
     # return model, tokenizer
-    print(f"Building model and tokenizer from {tokenizer_path} and {model_path}")
+    logger.info(
+        f"[Init] Building tokenizer from {tokenizer_path} "
+        f"and model config from {model_path}",
+    )
     tokenizer = DebertaV2Tokenizer(tokenizer_path, do_lower_case=lower)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
@@ -234,12 +258,21 @@ def build_model_and_tokenizer(
     config.eos_token_id = tokenizer.sep_token_id
     config.sep_token_id = tokenizer.sep_token_id
 
-    model = AutoModelForMaskedLM.from_config(config,
-                                             trust_remote_code=True)
+    model = AutoModelForMaskedLM.from_config(config, trust_remote_code=True)
+    logger.info(
+        f"[Init] Tokenizer vocab size: {tokenizer.vocab_size}, "
+        f"pad_token_id: {tokenizer.pad_token_id}, cls_token_id: {tokenizer.cls_token_id}, "
+        f"sep_token_id: {tokenizer.sep_token_id}",
+    )
+    logger.info(
+        f"[Init] Model created with hidden_size={hidden_size}, "
+        f"num_layers={num_layers}, num_heads={num_heads}, "
+        f"max_position_embeddings={max_position_embeddings}",
+    )
     return model, tokenizer
 
-# python train.py --mode mono --l1 eng --l1_path BabyLM-community/babylm-eng --out models/mono_eng --tokenizer_path tokenizers/bb24.model --logging_steps 10 --max_tokens 10000
-# python train.py --mode multi --l1 eng --l2 deu --l1_path BabyLM-community/babylm-eng --l2_path BabyLM-community/babylm-deu --out models/multi_eng_to_deu
+# python train.py --mode mono --l1 eng --l1_path BabyLM-community/babylm-eng --tokenizer_path tokenizers/bb24.model --logging_steps 1 --max_tokens 10000
+# python train.py --mode multi --l1 eng --l2 deu --l1_path BabyLM-community/babylm-eng --l2_path BabyLM-community/babylm-deu --tokenizer_path tokenizers/bb24.model --logging_steps 1 --max_tokens 1000
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -281,7 +314,7 @@ def parse_args():
     parser.add_argument(
         "--out",
         type=str,
-        required=True,
+        default="models",
         help=
         "Base output directory where run-specific subfolders will be created.",
     )
@@ -315,9 +348,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    logger.info(f"[Init] Parsed arguments: {args}")
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"[Init] Using device: {device}")
 
     # Basic argument validation depending on mode
     if args.mode == "mono":
@@ -360,10 +395,9 @@ def main():
         )
 
         total_steps = args.epochs * steps_per_epoch
-        print(
+        logger.info(
             f"[Mono] Training on {args.l1} with {total_steps} total steps "
             f"({args.epochs} epochs x {steps_per_epoch} steps/epoch)",
-            flush=True,
         )
 
         mono_output = os.path.join(args.out, f"mono_{args.l1}")
@@ -396,10 +430,9 @@ def main():
         )
 
         total_steps_l1 = args.epochs * steps_per_epoch_l1
-        print(
+        logger.info(
             f"[Multi] Phase 1: Training on {args.l1} with {total_steps_l1} total steps "
             f"({args.epochs} epochs x {steps_per_epoch_l1} steps/epoch)",
-            flush=True,
         )
 
         train(
@@ -430,10 +463,9 @@ def main():
         )
 
         total_steps_l2 = args.epochs * steps_per_epoch_l2
-        print(
+        logger.info(
             f"[Multi] Phase 2: Training on {args.l2} with {total_steps_l2} total steps "
             f"({args.epochs} epochs x {steps_per_epoch_l2} steps/epoch)",
-            flush=True,
         )
 
         multi_output = os.path.join(args.out, f"multi_{args.l1}_to_{args.l2}")

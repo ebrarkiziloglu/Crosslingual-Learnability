@@ -1,6 +1,8 @@
 # dataloaders.py
+import logging
 import math
 import os
+import sys
 import random
 from typing import Tuple, Optional
 
@@ -9,6 +11,14 @@ from torch.utils.data import DataLoader
 from datasets import load_dataset, DatasetDict, Dataset
 
 from preprocessing import tokenize, group_texts, padding_collate_fn
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+logger = logging.getLogger(__name__)
 
 
 def load_lang_datasets(dataset_path: str,
@@ -38,7 +48,20 @@ def load_lang_datasets(dataset_path: str,
     """
 
     token = hf_token or os.getenv("HF_TOKEN")
+    logger.info(
+        "Loading dataset '%s' (language=%s, max_tokens=%s, validation_split_ratio=%.2f)",
+        dataset_path,
+        language,
+        str(max_tokens),
+        validation_split_ratio,
+    )
     dataset = load_dataset(dataset_path, token=token)
+
+    logger.info(
+        "Loaded dataset '%s' with splits: %s",
+        dataset_path,
+        list(dataset.keys()),
+    )
 
     if max_tokens is not None:
         dataset = sample_to_max_tokens(dataset, max_tokens, validation_split_ratio)
@@ -46,6 +69,12 @@ def load_lang_datasets(dataset_path: str,
     # If only train split exists:
     if "validation" not in dataset and "train" in dataset:
         train_dataset = dataset["train"]
+        logger.info(
+            "Dataset '%s' has only 'train' split; splitting into train/validation "
+            "with validation ratio %.2f",
+            dataset_path,
+            validation_split_ratio,
+        )
         # Split train into train/validation
         split_dataset = train_dataset.train_test_split(
             test_size=validation_split_ratio, seed=42)
@@ -54,9 +83,19 @@ def load_lang_datasets(dataset_path: str,
             "validation": split_dataset["test"]
         })
     elif "validation" not in dataset:
+        logger.error(
+            "No 'train' or 'validation' split found in %s. Dataset is: %s",
+            dataset_path,
+            dataset,
+        )
         raise ValueError(
             f"No 'train' or 'validation' split found in {dataset_path}. Dataset is:\n{dataset}"
         )
+
+    logger.info(
+        "Final dataset splits: %s",
+        {k: len(v) for k, v in dataset.items()},
+    )
 
     return dataset
 
@@ -79,7 +118,24 @@ def sample_to_max_tokens(
     train_tokens = sum(train_ds["num-tokens"]) if train_ds else 0
     valid_tokens = sum(valid_ds["num-tokens"]) if valid_ds else 0
     total_tokens = train_tokens + valid_tokens
-
+    logger.info(
+        "[Sampling] Starting token-based sampling for dataset to fit max_tokens=%d. "
+        "Current total tokens: %d (train=%d, validation=%d)",
+        max_tokens,
+        total_tokens,
+        train_tokens,
+        valid_tokens,
+    )
+    if total_tokens > max_tokens:
+        logger.info(
+            "[Sampling] Will sample down to %d tokens (%.2f%% of original data).",
+            max_tokens,
+            100.0 * max_tokens / total_tokens,
+        )
+    else:
+        logger.info(
+            "[Sampling] No sampling needed: dataset is already under the limit."
+        )
     if total_tokens <= max_tokens:
         return dataset  # No sampling needed
     if not valid_ds:
@@ -92,6 +148,13 @@ def sample_to_max_tokens(
         # Calculate target tokens for train and validation
         target_train_tokens = int(max_tokens * (1 - validation_split_ratio))
         target_valid_tokens = max_tokens - target_train_tokens
+
+        logger.info(
+            "[Sampling] Token budget split: train=%d, validation=%d (ratio=%.2f)",
+            target_train_tokens,
+            target_valid_tokens,
+            validation_split_ratio,
+        )
 
         # Sample train split
         sampled_train = sample_dataset_by_tokens(train_ds, target_train_tokens)
@@ -110,6 +173,12 @@ def sample_dataset_by_tokens(dataset: Dataset, target_tokens: int) -> Dataset:
     indices = []
     current_tokens = 0
 
+    logger.info(
+        "[Sampling] Sampling dataset of %d documents to approximately %d tokens.",
+        len(dataset),
+        target_tokens,
+    )
+
     # Shuffle indices to get random sample
     all_indices = list(range(len(dataset)))
     random.Random(42).shuffle(all_indices)  # Deterministic shuffle
@@ -119,6 +188,12 @@ def sample_dataset_by_tokens(dataset: Dataset, target_tokens: int) -> Dataset:
             break
         indices.append(idx)
         current_tokens += dataset[idx]["num-tokens"]
+
+    logger.info(
+        "[Sampling] Finished sampling: selected %d documents, ~%d tokens.",
+        len(indices),
+        current_tokens,
+    )
 
     return dataset.select(indices)
 
@@ -132,6 +207,12 @@ def tokenize_and_group(
     Tokenize the raw dataset with the provided tokenizer and group
     it into fixed-length chunks usable for masked language modeling.
     """
+    logger.info(
+        "Starting tokenization and grouping with max_seq_len=%d, num_proc=%d",
+        max_seq_len,
+        num_proc,
+    )
+
     tokenized = dataset.map(
         tokenize,
         batched=True,
@@ -147,6 +228,11 @@ def tokenize_and_group(
         fn_kwargs={"max_len": max_seq_len},
         num_proc=num_proc,
         desc="Grouping into fixed-length sequences",
+    )
+
+    logger.info(
+        "Completed tokenization and grouping. Split sizes: %s",
+        {k: len(v) for k, v in grouped.items()},
     )
 
     return grouped
@@ -194,6 +280,18 @@ def create_dataloaders(
     -------
     train_dataloader, eval_dataloader, steps_per_epoch
     """
+    logger.info(
+        "Creating dataloaders from dataset '%s' with max_seq_len=%d, batch_size=%d, "
+        "num_proc=%d, num_workers=%d, max_tokens=%s, validation_split_ratio=%.2f",
+        dataset_path,
+        max_seq_len,
+        batch_size,
+        num_proc,
+        num_workers,
+        str(max_tokens),
+        validation_split_ratio,
+    )
+
     dataset = load_lang_datasets(
         dataset_path,
         hf_token=hf_token,
@@ -220,6 +318,12 @@ def create_dataloaders(
 
     steps_per_epoch = math.ceil(len(grouped["train"]) / batch_size)
 
+    logger.info(
+        "Created dataloaders: train_batches_per_epoch=%d (train_samples=%d), "
+        "eval_samples=%d",
+        steps_per_epoch,
+        len(grouped["train"]),
+        len(grouped["validation"]),
+    )
+
     return train_dataloader, eval_dataloader, steps_per_epoch
-
-
