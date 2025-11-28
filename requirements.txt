@@ -1,0 +1,13 @@
+# Core training stack
+torch==2.8.0
+transformers==4.52.0
+datasets
+
+# Optional but recommended for better HF ecosystem support
+accelerate
+huggingface-hub
+sentencepiece
+# Utilities used indirectly (CLI, typing, etc. are from the standard library)
+numpy
+
+
