@@ -222,10 +222,10 @@ def build_model_and_tokenizer(
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
     config.vocab_size = tokenizer.vocab_size
-    config.num_hidden_layers = num_hidden_layers
+    config.num_hidden_layers = num_layers
     config.hidden_size = hidden_size
     config.intermediate_size = intermediate_size
-    config.num_attention_heads = num_attention_heads
+    config.num_attention_heads = num_heads
     config.max_position_embeddings = max_position_embeddings
 
     config.pad_token_id = tokenizer.pad_token_id
@@ -238,7 +238,7 @@ def build_model_and_tokenizer(
                                              trust_remote_code=True)
     return model, tokenizer
 
-# python train.py --mode mono --l1 eng --l1_path BabyLM-community/babylm-eng --out models/mono_eng --tokenizer_path tokenizers/bb24.model 
+# python train.py --mode mono --l1 eng --l1_path BabyLM-community/babylm-eng --out models/mono_eng --tokenizer_path tokenizers/bb24.model --logging_steps 10 --max_tokens 10000
 # python train.py --mode multi --l1 eng --l2 deu --l1_path BabyLM-community/babylm-eng --l2_path BabyLM-community/babylm-deu --out models/multi_eng_to_deu
 
 def parse_args():
@@ -292,7 +292,7 @@ def parse_args():
     parser.add_argument("--grad_acc", type=int, default=1)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--cpus", type=int, default=4)
-    parser.add_argument("--logging_steps", type=int, default=100)
+    parser.add_argument("--logging_steps", type=int, default=1000)
     parser.add_argument("--eval_steps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--lower", type=bool, default=False)

@@ -12,7 +12,7 @@ from preprocessing import tokenize, group_texts, padding_collate_fn
 
 
 def load_lang_datasets(dataset_path: str,
-                       language: str,
+                       language: str = None,
                        hf_token: Optional[str] = None,
                        max_tokens: Optional[int] = None,
                        validation_split_ratio: float = 0.25) -> DatasetDict:
@@ -194,7 +194,7 @@ def create_dataloaders(
     -------
     train_dataloader, eval_dataloader, steps_per_epoch
     """
-    dataset = load_language_datasets(
+    dataset = load_lang_datasets(
         dataset_path,
         hf_token=hf_token,
         max_tokens=max_tokens,
