@@ -9,5 +9,5 @@ huggingface-hub
 sentencepiece
 # Utilities used indirectly (CLI, typing, etc. are from the standard library)
 numpy
-
-
+minicons
+protobuf>=3.20.0,<5.0.0
