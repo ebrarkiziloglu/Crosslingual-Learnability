@@ -7,11 +7,12 @@ import logging
 import sys
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from transformers import BertConfig, BertForMaskedLM, BertTokenizerFast, set_seed, DebertaV2Tokenizer, AutoConfig, AutoModelForMaskedLM
 from transformers.optimization import get_cosine_schedule_with_warmup
 
 from dataloaders import create_dataloaders
+from preprocessing import padding_collate_fn
 
 logging.basicConfig(
     level=logging.INFO,
@@ -286,6 +287,15 @@ def parse_args():
         "Mode of training: 'mono' (monolingual) or 'multi' (bilingual, L1 then L2).",
     )
     parser.add_argument(
+        "--multi_training_type",
+        type=str,
+        default="sequential",
+        choices=["sequential", "simultaneous"],
+        help=
+        "For 'multi' mode: 'sequential' (case 1, train on L1 then L2) or "
+        "'simultaneous' (case 2, train on L1 and L2 together).",
+    )
+    parser.add_argument(
         "--l1",
         type=str,
         required=True,
@@ -417,72 +427,159 @@ def main():
         )
 
     elif args.mode == "multi":
-        # Phase 1: train on L1
-        train_loader_l1, eval_loader_l1, steps_per_epoch_l1 = create_dataloaders(
-            dataset_path=args.l1_path,
-            tokenizer=tokenizer,
-            max_seq_len=args.max_seq_len,
-            batch_size=args.batch_size,
-            num_proc=args.cpus,
-            num_workers=args.cpus,
-            hf_token=args.hf_token,
-            max_tokens=args.max_tokens,
-        )
+        if args.multi_training_type == "sequential":
+            # Case 1: Sequential pre-training (L1 then L2)
+            # Phase 1: train on L1
+            train_loader_l1, eval_loader_l1, steps_per_epoch_l1 = create_dataloaders(
+                dataset_path=args.l1_path,
+                tokenizer=tokenizer,
+                max_seq_len=args.max_seq_len,
+                batch_size=args.batch_size,
+                num_proc=args.cpus,
+                num_workers=args.cpus,
+                hf_token=args.hf_token,
+                max_tokens=args.max_tokens,
+            )
 
-        total_steps_l1 = args.epochs * steps_per_epoch_l1
-        logger.info(
-            f"[Multi] Phase 1: Training on {args.l1} with {total_steps_l1} total steps "
-            f"({args.epochs} epochs x {steps_per_epoch_l1} steps/epoch)",
-        )
+            total_steps_l1 = args.epochs * steps_per_epoch_l1
+            logger.info(
+                f"[Multi Sequential] Phase 1: Training on {args.l1} with {total_steps_l1} total steps "
+                f"({args.epochs} epochs x {steps_per_epoch_l1} steps/epoch)",
+            )
 
-        train(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataloader=train_loader_l1,
-            eval_dataloader=eval_loader_l1,
-            total_steps=total_steps_l1,
-            lr=args.lr,
-            grad_acc=args.grad_acc,
-            logging_steps=args.logging_steps,
-            eval_steps=args.eval_steps,
-            output_path=args.out,  # not used because save_output=False
-            device=device,
-            save_output=False,
-        )
+            train(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataloader=train_loader_l1,
+                eval_dataloader=eval_loader_l1,
+                total_steps=total_steps_l1,
+                lr=args.lr,
+                grad_acc=args.grad_acc,
+                logging_steps=args.logging_steps,
+                eval_steps=args.eval_steps,
+                output_path=args.out,  # not used because save_output=False
+                device=device,
+                save_output=False,
+            )
 
-        # Phase 2: continue training on L2
-        train_loader_l2, eval_loader_l2, steps_per_epoch_l2 = create_dataloaders(
-            dataset_path=args.l2_path,
-            tokenizer=tokenizer,
-            max_seq_len=args.max_seq_len,
-            batch_size=args.batch_size,
-            num_proc=args.cpus,
-            num_workers=args.cpus,
-            hf_token=args.hf_token,
-            max_tokens=args.max_tokens,
-        )
+            # Phase 2: continue training on L2
+            train_loader_l2, eval_loader_l2, steps_per_epoch_l2 = create_dataloaders(
+                dataset_path=args.l2_path,
+                tokenizer=tokenizer,
+                max_seq_len=args.max_seq_len,
+                batch_size=args.batch_size,
+                num_proc=args.cpus,
+                num_workers=args.cpus,
+                hf_token=args.hf_token,
+                max_tokens=args.max_tokens,
+            )
 
-        total_steps_l2 = args.epochs * steps_per_epoch_l2
-        logger.info(
-            f"[Multi] Phase 2: Training on {args.l2} with {total_steps_l2} total steps "
-            f"({args.epochs} epochs x {steps_per_epoch_l2} steps/epoch)",
-        )
+            total_steps_l2 = args.epochs * steps_per_epoch_l2
+            logger.info(
+                f"[Multi Sequential] Phase 2: Training on {args.l2} with {total_steps_l2} total steps "
+                f"({args.epochs} epochs x {steps_per_epoch_l2} steps/epoch)",
+            )
 
-        multi_output = os.path.join(args.out, f"multi_{args.l1}_to_{args.l2}")
-        train(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataloader=train_loader_l2,
-            eval_dataloader=eval_loader_l2,
-            total_steps=total_steps_l2,
-            lr=args.lr,
-            grad_acc=args.grad_acc,
-            logging_steps=args.logging_steps,
-            eval_steps=args.eval_steps,
-            output_path=multi_output,
-            device=device,
-            save_output=True,
-        )
+            multi_output = os.path.join(args.out, f"multi_{args.l1}_to_{args.l2}")
+            train(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataloader=train_loader_l2,
+                eval_dataloader=eval_loader_l2,
+                total_steps=total_steps_l2,
+                lr=args.lr,
+                grad_acc=args.grad_acc,
+                logging_steps=args.logging_steps,
+                eval_steps=args.eval_steps,
+                output_path=multi_output,
+                device=device,
+                save_output=True,
+            )
+
+        elif args.multi_training_type == "simultaneous":
+            # Case 2: Simultaneous pre-training (L1 and L2 together)
+            logger.info(
+                f"[Multi Simultaneous] Loading datasets for {args.l1} and {args.l2}",
+            )
+
+            # Create dataloaders for both languages
+            train_loader_l1, eval_loader_l1, steps_per_epoch_l1 = create_dataloaders(
+                dataset_path=args.l1_path,
+                tokenizer=tokenizer,
+                max_seq_len=args.max_seq_len,
+                batch_size=args.batch_size,
+                num_proc=args.cpus,
+                num_workers=args.cpus,
+                hf_token=args.hf_token,
+                max_tokens=args.max_tokens,
+            )
+
+            train_loader_l2, eval_loader_l2, steps_per_epoch_l2 = create_dataloaders(
+                dataset_path=args.l2_path,
+                tokenizer=tokenizer,
+                max_seq_len=args.max_seq_len,
+                batch_size=args.batch_size,
+                num_proc=args.cpus,
+                num_workers=args.cpus,
+                hf_token=args.hf_token,
+                max_tokens=args.max_tokens,
+            )
+
+            # Combine datasets for simultaneous training
+            # Get the underlying datasets from the dataloaders
+            combined_train_dataset = ConcatDataset([
+                train_loader_l1.dataset,
+                train_loader_l2.dataset,
+            ])
+            combined_eval_dataset = ConcatDataset([
+                eval_loader_l1.dataset,
+                eval_loader_l2.dataset,
+            ])
+
+            # Create new dataloaders with combined datasets
+            combined_train_loader = DataLoader(
+                combined_train_dataset,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.cpus,
+                collate_fn=padding_collate_fn,
+            )
+
+            combined_eval_loader = DataLoader(
+                combined_eval_dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.cpus,
+                collate_fn=padding_collate_fn,
+            )
+
+            # Calculate total steps based on combined dataset
+            total_samples = len(combined_train_dataset)
+            steps_per_epoch_combined = math.ceil(total_samples / args.batch_size)
+            total_steps_combined = args.epochs * steps_per_epoch_combined
+
+            logger.info(
+                f"[Multi Simultaneous] Training on {args.l1} + {args.l2} simultaneously "
+                f"with {total_steps_combined} total steps "
+                f"({args.epochs} epochs x {steps_per_epoch_combined} steps/epoch, "
+                f"total samples: {total_samples})",
+            )
+
+            multi_output = os.path.join(args.out, f"multi_sim_{args.l1}_{args.l2}")
+            train(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataloader=combined_train_loader,
+                eval_dataloader=combined_eval_loader,
+                total_steps=total_steps_combined,
+                lr=args.lr,
+                grad_acc=args.grad_acc,
+                logging_steps=args.logging_steps,
+                eval_steps=args.eval_steps,
+                output_path=multi_output,
+                device=device,
+                save_output=True,
+            )
 
 
 if __name__ == "__main__":
